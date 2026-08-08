@@ -66,7 +66,7 @@ def text_matches(text: str) -> bool:
     return has_date and has_venue
 
 
-def fetch_rendered_text(context, url: str, timeout_ms: int = 25000) -> str:
+def fetch_rendered_text(context, url: str, timeout_ms: int = 8000) -> str:
     """サイトごとに新しいタブでページを開き、レンダリング後のテキストを取得する"""
     page = context.new_page()
     try:
@@ -76,7 +76,7 @@ def fetch_rendered_text(context, url: str, timeout_ms: int = 25000) -> str:
             # domcontentloadedすら取れない場合、少し待ってから現状のテキストを試みる
             pass
         # JSでの追加描画を待つ(networkidleは不安定なため固定待機に変更)
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1500)
         return page.inner_text("body")
     finally:
         page.close()
