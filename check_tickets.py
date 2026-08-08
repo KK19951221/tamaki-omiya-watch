@@ -16,10 +16,14 @@
 """
 
 import json
+import functools
 import os
 import re
+import signal
 import sys
 from datetime import datetime, timezone, timedelta
+
+print = functools.partial(print, flush=True)
 
 import requests
 from playwright.sync_api import sync_playwright
@@ -46,6 +50,14 @@ SITES = {
 }
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
+
+
+class HardTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise HardTimeout("処理が固まったため強制的に打ち切りました")
 
 
 def load_state():
@@ -111,6 +123,8 @@ def check_all_sites() -> list[str]:
         )
 
         for name, url in SITES.items():
+            signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(15)  # このサイトの処理に何があっても15秒で強制打ち切り
             try:
                 text = fetch_rendered_text(context, url)
                 if "セッション情報が切断されました" in text:
@@ -128,6 +142,8 @@ def check_all_sites() -> list[str]:
                 found_on.append((name, url))
             except Exception as e:
                 print(f"[{name}] 取得中にエラー: {e}")
+            finally:
+                signal.alarm(0)
 
         browser.close()
     return found_on
