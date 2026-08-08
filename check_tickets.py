@@ -107,7 +107,7 @@ def check_all_sites() -> list[str]:
             )
         )
 
-for name, url in SITES.items():
+        for name, url in SITES.items():
             try:
                 text = fetch_rendered_text(context, url)
                 if "セッション情報が切断されました" in text:
