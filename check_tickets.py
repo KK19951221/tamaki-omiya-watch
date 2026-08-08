@@ -66,6 +66,16 @@ def text_matches(text: str) -> bool:
     return has_date and has_venue
 
 
+# チケット東京のカレンダーは「18:00●」(全席種予約可能)「18:00▲」(席種により予約可能)
+# 「18:00×」(予定枚数終了)のように、時刻の直後に記号が付く。
+# ●か▲が無い限り、日付や会場名だけがページに残っていても「完売中」なので通知しない。
+AVAILABILITY_MARK_PATTERN = r"\d{1,2}:\d{2}\s*[●▲]"
+
+
+def kyodotokyo_is_available(text: str) -> bool:
+    return re.search(AVAILABILITY_MARK_PATTERN, text) is not None
+
+
 def fetch_rendered_text(context, url: str, timeout_ms: int = 8000) -> str:
     """サイトごとに新しいタブでページを開き、レンダリング後のテキストを取得する"""
     page = context.new_page()
@@ -97,18 +107,22 @@ def check_all_sites() -> list[str]:
             )
         )
 
-        for name, url in SITES.items():
+for name, url in SITES.items():
             try:
                 text = fetch_rendered_text(context, url)
                 if "セッション情報が切断されました" in text:
                     # チケット東京はセッション制御で直接アクセスできないことがある
                     print(f"[{name}] セッション切断のため今回はスキップ (best effort)")
                     continue
-                if text_matches(text):
-                    print(f"[{name}] 8/23 大宮 の記載を検知しました！")
-                    found_on.append((name, url))
-                else:
+                if not text_matches(text):
                     print(f"[{name}] 該当なし")
+                    continue
+                if name == "チケット東京" and not kyodotokyo_is_available(text):
+                    # 「8/23」「大宮」の文字はあるが、●/▲マークが無い＝まだ完売中
+                    print(f"[{name}] 8/23 大宮 の記載はあるが、まだ予約可能マーク(●/▲)が無いため完売中と判断")
+                    continue
+                print(f"[{name}] 8/23 大宮 の記載を検知しました！")
+                found_on.append((name, url))
             except Exception as e:
                 print(f"[{name}] 取得中にエラー: {e}")
 
