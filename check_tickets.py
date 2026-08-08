@@ -66,17 +66,29 @@ def text_matches(text: str) -> bool:
     return has_date and has_venue
 
 
-def fetch_rendered_text(page, url: str, timeout_ms: int = 20000) -> str:
-    """Playwrightでページを開き、レンダリング後のテキストを取得する"""
-    page.goto(url, timeout=timeout_ms, wait_until="networkidle")
-    return page.inner_text("body")
+def fetch_rendered_text(context, url: str, timeout_ms: int = 25000) -> str:
+    """サイトごとに新しいタブでページを開き、レンダリング後のテキストを取得する"""
+    page = context.new_page()
+    try:
+        try:
+            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+        except Exception:
+            # domcontentloadedすら取れない場合、少し待ってから現状のテキストを試みる
+            pass
+        # JSでの追加描画を待つ(networkidleは不安定なため固定待機に変更)
+        page.wait_for_timeout(3000)
+        return page.inner_text("body")
+    finally:
+        page.close()
 
 
 def check_all_sites() -> list[str]:
     """再販が検知されたサイト名のリストを返す"""
     found_on = []
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(
+            args=["--disable-http2"]  # 一部サイトのHTTP/2ブロック対策
+        )
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -84,11 +96,10 @@ def check_all_sites() -> list[str]:
                 "Chrome/125.0 Safari/537.36"
             )
         )
-        page = context.new_page()
 
         for name, url in SITES.items():
             try:
-                text = fetch_rendered_text(page, url)
+                text = fetch_rendered_text(context, url)
                 if "セッション情報が切断されました" in text:
                     # チケット東京はセッション制御で直接アクセスできないことがある
                     print(f"[{name}] セッション切断のため今回はスキップ (best effort)")
