@@ -87,7 +87,7 @@ def fetch_rendered_text(context, url: str, timeout_ms: int = 8000) -> str:
             pass
         # JSでの追加描画を待つ(networkidleは不安定なため固定待機に変更)
         page.wait_for_timeout(1500)
-        return page.inner_text("body")
+        return page.inner_text("body", timeout=5000)
     finally:
         page.close()
 
