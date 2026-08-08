@@ -13,27 +13,29 @@
 
 一度通知したら state.json に記録し、以降は再通知しない。
 また 2026-08-23 18:00 (JST) を過ぎたら自動的に監視を打ち切る。
+
+各サイトのチェックは別プロセスで実行し、一定時間で応答が無ければ
+OSレベルで強制終了する(Playwrightが内部で完全にフリーズしても
+全体が巻き込まれないようにするため)。
 """
 
 import json
 import functools
+import multiprocessing as mp
 import os
 import re
-import signal
 import sys
 from datetime import datetime, timezone, timedelta
 
 print = functools.partial(print, flush=True)
 
 import requests
-from playwright.sync_api import sync_playwright
 
 JST = timezone(timedelta(hours=9))
 CUTOFF = datetime(2026, 8, 23, 18, 0, 0, tzinfo=JST)
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
 
-# 「8/23」の表記ゆれ + 「大宮」を両方含むかで判定する
 DATE_PATTERNS = [
     r"8\s*/\s*23",
     r"8\s*\.\s*23",
@@ -50,14 +52,7 @@ SITES = {
 }
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
-
-
-class HardTimeout(Exception):
-    pass
-
-
-def _alarm_handler(signum, frame):
-    raise HardTimeout("処理が固まったため強制的に打ち切りました")
+PER_SITE_HARD_TIMEOUT_SEC = 20
 
 
 def load_state():
@@ -78,9 +73,6 @@ def text_matches(text: str) -> bool:
     return has_date and has_venue
 
 
-# チケット東京のカレンダーは「18:00●」(全席種予約可能)「18:00▲」(席種により予約可能)
-# 「18:00×」(予定枚数終了)のように、時刻の直後に記号が付く。
-# ●か▲が無い限り、日付や会場名だけがページに残っていても「完売中」なので通知しない。
 AVAILABILITY_MARK_PATTERN = r"\d{1,2}:\d{2}\s*[●▲]"
 
 
@@ -88,64 +80,80 @@ def kyodotokyo_is_available(text: str) -> bool:
     return re.search(AVAILABILITY_MARK_PATTERN, text) is not None
 
 
-def fetch_rendered_text(context, url: str, timeout_ms: int = 8000) -> str:
-    """サイトごとに新しいタブでページを開き、レンダリング後のテキストを取得する"""
-    page = context.new_page()
+def _fetch_worker(url: str, result_queue: "mp.Queue"):
+    """別プロセスで実行される。ここが固まってもterminate()で殺せる。"""
     try:
-        try:
-            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-        except Exception:
-            # domcontentloadedすら取れない場合、少し待ってから現状のテキストを試みる
-            pass
-        # JSでの追加描画を待つ(networkidleは不安定なため固定待機に変更)
-        page.wait_for_timeout(1500)
-        # inner_text()はPlaywrightの「要素が安定するまで待つ」仕組みのせいで
-        # アニメーションが続くページ等でタイムアウトしやすいため、
-        # document.body.innerText を直接評価して即座に取得する
-        return page.evaluate("document.body ? document.body.innerText : ''")
-    finally:
-        page.close()
+        from playwright.sync_api import sync_playwright
 
-
-def check_all_sites() -> list[str]:
-    """再販が検知されたサイト名のリストを返す"""
-    found_on = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            args=["--disable-http2"]  # 一部サイトのHTTP/2ブロック対策
-        )
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0 Safari/537.36"
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--disable-http2"])
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0 Safari/537.36"
+                )
             )
-        )
-
-        for name, url in SITES.items():
-            signal.signal(signal.SIGALRM, _alarm_handler)
-            signal.alarm(15)  # このサイトの処理に何があっても15秒で強制打ち切り
+            page = context.new_page()
             try:
-                text = fetch_rendered_text(context, url)
-                if "セッション情報が切断されました" in text:
-                    # チケット東京はセッション制御で直接アクセスできないことがある
-                    print(f"[{name}] セッション切断のため今回はスキップ (best effort)")
-                    continue
-                if not text_matches(text):
-                    print(f"[{name}] 該当なし")
-                    continue
-                if name == "チケット東京" and not kyodotokyo_is_available(text):
-                    # 「8/23」「大宮」の文字はあるが、●/▲マークが無い＝まだ完売中
-                    print(f"[{name}] 8/23 大宮 の記載はあるが、まだ予約可能マーク(●/▲)が無いため完売中と判断")
-                    continue
-                print(f"[{name}] 8/23 大宮 の記載を検知しました！")
-                found_on.append((name, url))
-            except Exception as e:
-                print(f"[{name}] 取得中にエラー: {e}")
-            finally:
-                signal.alarm(0)
+                page.goto(url, timeout=8000, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
+            text = page.evaluate("document.body ? document.body.innerText : ''")
+            browser.close()
+        result_queue.put(("ok", text))
+    except Exception as e:
+        result_queue.put(("error", str(e)))
 
-        browser.close()
+
+def fetch_with_hard_timeout(url: str):
+    """サイト取得を別プロセスで実行し、時間切れならOSレベルで強制終了する"""
+    ctx = mp.get_context("fork")
+    result_queue = ctx.Queue()
+    proc = ctx.Process(target=_fetch_worker, args=(url, result_queue))
+    proc.start()
+    proc.join(PER_SITE_HARD_TIMEOUT_SEC)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(3)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(3)
+        return None, f"{PER_SITE_HARD_TIMEOUT_SEC}秒経過したため強制終了しました"
+
+    if not result_queue.empty():
+        status, payload = result_queue.get()
+        if status == "ok":
+            return payload, None
+        return None, payload
+
+    return None, "プロセスが結果を返さずに終了しました"
+
+
+def check_all_sites() -> list:
+    found_on = []
+    for name, url in SITES.items():
+        text, error = fetch_with_hard_timeout(url)
+
+        if error is not None:
+            print(f"[{name}] 取得中にエラー: {error}")
+            continue
+
+        if "セッション情報が切断されました" in text:
+            print(f"[{name}] セッション切断のため今回はスキップ (best effort)")
+            continue
+        if not text_matches(text):
+            print(f"[{name}] 該当なし")
+            continue
+        if name == "チケット東京" and not kyodotokyo_is_available(text):
+            print(f"[{name}] 8/23 大宮 の記載はあるが、まだ予約可能マーク(●/▲)が無いため完売中と判断")
+            continue
+
+        print(f"[{name}] 8/23 大宮 の記載を検知しました！")
+        found_on.append((name, url))
+
     return found_on
 
 
