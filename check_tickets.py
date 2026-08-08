@@ -87,7 +87,10 @@ def fetch_rendered_text(context, url: str, timeout_ms: int = 8000) -> str:
             pass
         # JSでの追加描画を待つ(networkidleは不安定なため固定待機に変更)
         page.wait_for_timeout(1500)
-        return page.inner_text("body", timeout=5000)
+        # inner_text()はPlaywrightの「要素が安定するまで待つ」仕組みのせいで
+        # アニメーションが続くページ等でタイムアウトしやすいため、
+        # document.body.innerText を直接評価して即座に取得する
+        return page.evaluate("document.body ? document.body.innerText : ''")
     finally:
         page.close()
 
