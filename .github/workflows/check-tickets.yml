@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ticket-check
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
