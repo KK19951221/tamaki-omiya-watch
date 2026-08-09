@@ -73,7 +73,9 @@ def text_matches(text: str) -> bool:
     return has_date and has_venue
 
 
-AVAILABILITY_MARK_PATTERN = r"\d{1,2}:\d{2}\s*[●▲]"
+# ●▲(黒塗り・デスクトップ表記)に加え、◯△(白抜き・モバイル表記)にも対応
+# ◯はU+25EF(LARGE CIRCLE)であり、○(U+25CB WHITE CIRCLE)とは別文字なので両方含める
+AVAILABILITY_MARK_PATTERN = r"\d{1,2}:\d{2}\s*[●▲○◯△]"
 
 
 def kyodotokyo_is_available(text: str) -> bool:
@@ -148,7 +150,7 @@ def check_all_sites() -> list:
             print(f"[{name}] 該当なし")
             continue
         if name == "チケット東京" and not kyodotokyo_is_available(text):
-            print(f"[{name}] 8/23 大宮 の記載はあるが、まだ予約可能マーク(●/▲)が無いため完売中と判断")
+            print(f"[{name}] 8/23 大宮 の記載はあるが、まだ予約可能マーク(●/▲/◯/△)が無いため完売中と判断")
             continue
 
         print(f"[{name}] 8/23 大宮 の記載を検知しました！")
